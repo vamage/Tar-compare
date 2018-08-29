@@ -8,68 +8,31 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"net/url"
 	"os"
 	"path/filepath"
-	"reflect"
 )
 
 
 func main() {
 	source := flag.String("source", "", "Tar file to compare from")
-	destination := flag.String("destination", "", "Destination path ")
-	purgeurl := flag.String("purge", "http://127.0.0.1/purge.php?file=%s", "Url to send invalidate commands to ")
+	cache := flag.String("cache", "", "cache path ")
+	deploy     := flag.String("deploy", "1", "deploy path ")
 	flag.Parse()
-	var todelete = make([]string, 0, 40)
-	realdestination,_ := filepath.Abs(* destination)
-	f := filesystem(realdestination)
-	realpath := filepath.Dir(realdestination)
-	t, updated := readtar(source, f, realpath)
-	var diff = map[string]string{}
-
-	for k, _ := range f {
-		if _, exist := t[k]; !exist {
-			todelete = append(todelete, k)
-		}
+	err := os.MkdirAll(*cache, 0755)
+	if err != nil {
+		panic(err)
 	}
+	cachepath,_  :=  filepath.Abs(* cache)
+	deploypath :=  * deploy
+	fmt.Printf("1: %s \n 2:%s \n", cachepath,deploypath)
+	_ = readtar(* source,cachepath,deploypath)
 
-
-	for k, v := range diff {
-		fmt.Printf(" %s  : %s \n", k, v)
-	}
-
-	for _, file := range updated {
-		realfile := fmt.Sprintf("%s/%s", realpath, file)
-		err := os.Rename(fmt.Sprintf("%s.%x", realfile, t[file]), realfile)
-		if err != nil {
-			panic(err)
-		}
-	}
-	purgefiles(* purgeurl,realpath,updated)
-	//files need to exist to be marked for recompiling
-	purgefiles(* purgeurl,realpath,todelete)
-	for _, file := range todelete {
-		err := os.Remove(fmt.Sprintf("%s/%s", realpath, file))
-		if err != nil {
-			panic(err)
-		}
-	}
-
-	fmt.Printf("%s , %s, %d", *source, *destination, len(t))
-	eq := reflect.DeepEqual(t, f)
-	fmt.Printf("The hashes %t\n", eq)
-	if eq {
-		os.Exit(0)
-	}else {
-		os.Exit(12)
-	}
 }
 
-func readtar(intar *string, compare map[string][16]byte, folder string) (map[string][16]byte, []string) {
+func readtar(intar string, cachepath string,deploypath string ) (map[string][16]byte) {
 	var m = map[string][16]byte{}
-	var updated = make([]string, 0, 40)
 
-	r, err := os.Open(*intar)
+	r, err := os.Open(intar)
 	gzr, err := gzip.NewReader(r)
 	if err != nil {
 		fmt.Printf("couldn't open %s", intar)
@@ -84,7 +47,7 @@ func readtar(intar *string, compare map[string][16]byte, folder string) (map[str
 
 		// if no more files are found return
 		case err == io.EOF:
-			return m, updated
+			return m
 
 			// return any other error
 		case err != nil:
@@ -106,68 +69,48 @@ func readtar(intar *string, compare map[string][16]byte, folder string) (map[str
 		switch header.Typeflag {
 		case tar.TypeDir:
 			//ensure directory exist
-			err = os.MkdirAll(target, os.FileMode(header.Mode))
+			cachefolder := fmt.Sprintf("%s/%s", cachepath, target)
+			deployfolder  := fmt.Sprintf("%s/%s", deploypath, target)
+			err = os.MkdirAll(cachefolder, os.FileMode(header.Mode))
 			if err != nil {
 				panic(err)
 			}
-
+			err = os.MkdirAll(deployfolder, os.FileMode(header.Mode))
+			if err != nil {
+				panic(err)
+			}
 		// if it's a file create it
 		case tar.TypeReg:
 			file, _ := ioutil.ReadAll(tr)
 			hash := md5.Sum(file)
 			m[target] = hash
-			if compare[target] != hash {
-				writetempfile(file, os.FileMode(header.Mode), hash, target, folder)
-				updated = append(updated, target)
+				writecachefile(file, os.FileMode(header.Mode), hash, target, cachepath,deploypath)
 
-			}
 		}
 	}
 }
 
-func filesystem(folder string) map[string][16]byte {
-	var m = map[string][16]byte{}
-	realpath := filepath.Dir(folder)
-	if _, err := os.Stat( folder); os.IsNotExist(err) {
-		return nil
-	}
 
-	err := filepath.Walk(folder, func(path string, info os.FileInfo, err error) error {
+
+func writecachefile(data []byte, mode os.FileMode, hash [16]byte, path string, cachepath string, destinationpath string) {
+	tempfilename := fmt.Sprintf("%s/%s.%x", cachepath, path, hash)
+	destinationfile := fmt.Sprintf("%s/%s.%x", destinationpath, path, hash)
+	if _, err := os.Stat(tempfilename); os.IsNotExist(err) {
+
+		err := ioutil.WriteFile(tempfilename, data, mode)
 		if err != nil {
-			fmt.Printf("prevent panic by handling failure accessing a path %q: %v\n", folder, err)
-			return err
+			panic(err)
 		}
-		//Symlinks and directories can't be hashed.
-		if !info.IsDir() && info.Mode().IsRegular() {
-			r, _ := os.Open(path)
-			defer r.Close()
-			file, _ := ioutil.ReadAll(r)
-			hash := md5.Sum(file)
-			m[path[len(realpath)+1:]] = hash
+	}
+	if realpath,_ := os.Readlink(destinationfile); realpath!= tempfilename {
+		os.Remove(destinationfile)
+
+		err := os.Symlink(tempfilename, destinationfile)
+		if err != nil {
+			panic(err)
 		}
-
-		return nil
-	})
-
-	if err != nil {
-		fmt.Printf("error walking the path %q: %v\n", folder, err)
-	}
-	return m
-}
-
-func writetempfile(data []byte, mode os.FileMode, hash [16]byte, path string, desination string) {
-	filename := fmt.Sprintf("%s/%s.%x", desination, path, hash)
-	err := ioutil.WriteFile(filename, data, mode)
-	if err != nil {
-		panic(err)
 	}
 }
 
-func purgefiles(prugeurl string,path string,updated[] string)  {
-	for _, file := range updated {
-		purgefile :=fmt.Sprintf("%s/%s", path, file)
-		fmt.Printf(prugeurl,url.PathEscape(purgefile))
-		fmt.Println()
-	}
-}
+
 
