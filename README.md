@@ -1,4 +1,4 @@
-##tar-vfs
+## tar-vfs
 
 
 tool to ensure only changed or missing files are updated. This will limit writes and limit changes to file system bursting cache but peserving the the real path. 
@@ -13,7 +13,7 @@ deploy Path to set up symlink paths
 
 Cache   Path to store raw files
 
-###Example
+### Example
 
 Time to verify changes for linux kernel. 
 
